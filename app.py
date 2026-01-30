@@ -5,24 +5,27 @@ from datetime import datetime
 import json
 from streamlit_gsheets import GSheetsConnection
 
-# 1. 페이지 설정 및 모바일용 CSS 추가
-st.set_page_config(page_title="우리매장 웹 장부", layout="wide")
+# 1. 페이지 설정 및 반응형 CSS 추가
+st.set_page_config(page_title="매출 비용 관리 시스템", layout="wide")
 
-# 모바일에서 글자가 깨지지 않도록 하는 마법의 스타일 (CSS)
+# 모바일 호환성을 위한 마법의 CSS
 st.markdown("""
     <style>
-    /* 모바일 기기(폭 600px 이하)에서만 적용 */
-    @media (max-width: 600px) {
-        .stMetric { font-size: 0.8rem !important; } /* 지표 글자 크기 축소 */
-        .calendar-text { font-size: 10px !important; } /* 달력 안 글자 크기 축소 */
-        [data-testid="stHorizontalBlock"] { flex-direction: column !important; } /* 가로 배치를 세로로 변경 */
+    /* 모바일 기기 (최대 폭 768px 이하) 설정 */
+    @media (max-width: 768px) {
+        .main .block-container { padding-left: 1rem; padding-right: 1rem; }
+        .stMetric { padding: 5px !important; }
+        .stMetric div div { font-size: 0.8rem !important; } /* 지표 숫자 크기 조절 */
+        .calendar-text { font-size: 10px !important; }
+        /* 가로로 나열된 컬럼들을 모바일에서는 세로로 전환 */
+        [data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; }
     }
-    /* 달력 칸 높이 조절 */
-    .stContainer { padding: 5px !important; }
+    /* 달력 칸 안의 글자가 넘치지 않도록 조절 */
+    .stContainer { padding: 5px !important; margin: 2px !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# 2. 구글 시트 연결
+# 2. 구글 시트 연결 설정 (기존 데이터 로직 유지)
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
@@ -39,46 +42,64 @@ def save_data(new_df):
     conn.update(worksheet="sales", data=new_df)
     st.cache_data.clear()
 
-# --- 입력 로직 ---
-if 'temp_costs' not in st.session_state: st.session_state.temp_costs = []
+# --- 3. 콜백 및 비즈니스 로직 (기존 유지) ---
+def add_cost_callback():
+    if st.session_state.input_c_name and st.session_state.input_c_amount > 0:
+        st.session_state.temp_costs.append({"항목": st.session_state.input_c_name, "금액": st.session_state.input_c_amount})
+    st.session_state.input_c_name, st.session_state.input_c_amount = "", 0
 
 def save_and_clear_callback(input_date):
     h, d, count = st.session_state.input_h_sales, st.session_state.input_d_sales, st.session_state.input_d_count
     pay = d - (d * 0.078) - (count * 3100)
     df = load_data()
     df = df[df['날짜'] != input_date]
-    new_row = pd.DataFrame({
-        '날짜': [input_date], '홀매출': [h], '배달매출': [d], '배달건수': [count],
-        '예상지급액': [pay], '비용내역': [json.dumps(st.session_state.temp_costs, ensure_ascii=False)],
-        '총비용': [sum(c['금액'] for c in st.session_state.temp_costs)]
-    })
+    new_row = pd.DataFrame({'날짜': [input_date], '홀매출': [h], '배달매출': [d], '배달건수': [count],
+                            '예상지급액': [pay], '비용내역': [json.dumps(st.session_state.temp_costs, ensure_ascii=False)],
+                            '총비용': [sum(c['금액'] for c in st.session_state.temp_costs)]})
     save_data(pd.concat([df, new_row], ignore_index=True))
-    st.toast("저장 완료! ☁️")
+    st.session_state.input_h_sales, st.session_state.input_d_sales, st.session_state.input_d_count, st.session_state.temp_costs = 0, 0, 0, []
+    st.toast("저장 완료! 💾")
 
-# --- 메인 UI ---
+def delete_callback(date_obj):
+    df = load_data()
+    save_data(df[df['날짜'] != date_obj])
+    st.toast("삭제 완료 🗑️")
+
+# 세션 초기화
+for key in ['temp_costs', 'input_h_sales', 'input_d_sales', 'input_d_count', 'input_c_name', 'input_c_amount']:
+    if key not in st.session_state:
+        st.session_state[key] = [] if key == 'temp_costs' else (0 if 'sales' in key or 'count' in key or 'amount' in key else "")
+
+# --- 4. 메인 UI 및 사이드바 ---
 df = load_data()
 
 with st.sidebar:
-    st.header("📝 실적 기록")
-    curr_date = st.date_input("날짜", datetime.now().date())
-    st.number_input("홀 매출", key="input_h_sales", step=1000)
-    st.number_input("배달 매출", key="input_d_sales", step=1000)
-    st.button("💾 저장하기", type="primary", use_container_width=True, on_click=save_and_clear_callback, args=(curr_date,))
+    st.header("📝 오늘의 기록")
+    curr_date = st.date_input("날짜 선택", datetime.now().date())
+    st.number_input("홀 매출", min_value=0, step=1000, key="input_h_sales")
+    st.number_input("배달 매출(원금)", min_value=0, step=1000, key="input_d_sales")
+    st.number_input("배달 건수", min_value=0, step=1, key="input_d_count")
+    st.divider()
+    st.text_input("지출 항목명", key="input_c_name")
+    st.number_input("지출 금액", min_value=0, step=100, key="input_c_amount")
+    st.button("➕ 비용 추가", on_click=add_cost_callback, use_container_width=True)
+    if st.session_state.temp_costs:
+        for c in st.session_state.temp_costs: st.caption(f"• {c['항목']}: {c['금액']:,}원")
+    st.button("💾 최종 데이터 저장", type="primary", use_container_width=True, on_click=save_and_clear_callback, args=(curr_date,))
 
-st.title("📅 성과 분석")
-year = st.selectbox("연도", range(2024, 2030), index=datetime.now().year - 2024)
-month = st.selectbox("월", range(1, 13), index=datetime.now().month - 1)
+# --- 5. 달력 UI (PC 7열 유지 / 모바일 최적화) ---
+st.title("📅 월간 성과 분석 달력")
+y_col, m_col = st.columns(2)
+year = y_col.selectbox("연도", range(2024, 2030), index=datetime.now().year - 2024)
+month = m_col.selectbox("월", range(1, 13), index=datetime.now().month - 1)
 
-# --- 달력 표시 (PC/모바일 공용 최적화) ---
 calendar.setfirstweekday(6)
 cal = calendar.monthcalendar(year, month)
 days = ["일", "월", "화", "수", "목", "금", "토"]
-
-# 요일 헤더
-cols = st.columns(7)
+h_cols = st.columns(7)
 for i, d in enumerate(days):
     color = "#FF4B4B" if i == 0 else ("#1C83E1" if i == 6 else "#31333F")
-    cols[i].markdown(f"<p style='text-align:center; font-weight:bold; color:{color}; font-size:12px;'>{d}</p>", unsafe_allow_html=True)
+    h_cols[i].markdown(f"<p style='text-align:center; font-weight:bold; color:{color}; font-size:12px;'>{d}</p>", unsafe_allow_html=True)
 
 for week in cal:
     cols = st.columns(7)
@@ -87,30 +108,68 @@ for week in cal:
             if day != 0:
                 date_obj = datetime(year, month, day).date()
                 day_data = df[df['날짜'] == date_obj]
-                # 모바일에서 공간 확보를 위해 패딩 줄임
                 with st.container(border=True):
-                    st.markdown(f"<p style='font-size:12px; font-weight:bold; margin-bottom:2px;'>{day}</p>", unsafe_allow_html=True)
+                    # 날짜와 삭제버튼
+                    st.markdown(f"<div style='display:flex; justify-content:space-between;'><b>{day}</b></div>", unsafe_allow_html=True)
                     if not day_data.empty:
                         row = day_data.iloc[0]
-                        # 모바일에서 글자 깨짐 방지용 요약 표시
+                        # 모바일 가독성을 위해 단위를 k(천원)로 요약 표시 시도하거나 폰트 축소
                         st.markdown(f"""
-                            <div style='line-height:1.2;'>
-                                <p style='font-size:9px; color:#2E7D32; margin:0;'>H:{row['홀매출']//1000}k</p>
-                                <p style='font-size:9px; color:#1C83E1; margin:0;'>D:{row['배달매출']//1000}k</p>
+                            <div style='font-size:10px; line-height:1.1; margin-top:3px;'>
+                                <p style='color:#2E7D32; margin:0;'>홀:{row['홀매출']//1000}k</p>
+                                <p style='color:#1C83E1; margin:0;'>배:{row['배달매출']//1000}k</p>
+                                <p style='color:#D32F2F; margin:0;'>비:{row['총비용']//1000}k</p>
                             </div>
                         """, unsafe_allow_html=True)
+                        if st.button("X", key=f"del_{date_obj}"): delete_callback(date_obj)
 
-# 📊 실적 리포트 (모바일에서 자동으로 세로 정렬됨)
+# --- 6. 종합 분석 리포트 (기존 수식 및 비중 유지) ---
 st.divider()
-st.subheader("📊 월간 리포트")
-m_df = df[(pd.to_datetime(df['날짜']).dt.year == year) & (pd.to_datetime(df['날짜']).dt.month == month)].copy()
+st.subheader(f"📊 {month}월 실적 리포트")
+m_df = df[(pd.to_datetime(df['날짜']).dt.year == year) & (pd.to_datetime(df['날짜']).dt.month == month)].sort_values('날짜').copy()
 
 if not m_df.empty:
-    m_df['총매출'] = m_df['홀매출'] + m_df['배달매출']
-    t_sales = m_df['총매출'].sum()
+    m_df['당일총매출'] = m_df['홀매출'] + m_df['배달매출']
+    total_sales = m_df['당일총매출'].sum()
+    total_h = m_df['홀매출'].sum()
+    total_d = m_df['배달매출'].sum()
+    total_cost = m_df['총비용'].sum()
+    total_profit = total_sales - total_cost
+    profit_pct = (total_profit / total_sales * 100) if total_sales > 0 else 0
     
-    # 지표 카드 (PC 4열 / 모바일 1열 자동 전환)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("총 매출", f"{t_sales:,}원")
-    c2.metric("배달 비중", f"{(m_df['배달매출'].sum()/t_sales*100):.1f}%" if t_sales > 0 else "0%")
-    c3.metric("누적 정산액", f"{m_df['예상지급액'].sum():,.0f}원")
+    # 지표 카드 배치 (PC 4열 / 모바일 세로 자동전환)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("월 총 매출", f"{total_sales:,}원")
+    c2.metric("월 홀 매출", f"{total_h:,}원")
+    c3.metric("월 배달 매출", f"{total_d:,}원")
+    c4.metric("월 배달 정산액", f"{m_df['예상지급액'].sum():,.0f}원")
+    
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("월 누적 비용", f"{total_cost:,}원")
+    c6.metric("월 누적 순수익", f"{total_profit:,}원")
+    c7.metric("월 순수익률", f"{profit_pct:.1f}%")
+    c8.empty()
+
+    # 일별 실적 요약
+    st.markdown("#### 📝 일별 실적 요약")
+    summary = m_df[['날짜', '홀매출', '배달매출', '당일총매출', '총비용']].copy()
+    if total_sales > 0:
+        summary['순수익률(전체대비)'] = ((summary['당일총매출'] - summary['총비용']).cumsum() / total_sales * 100).map("{:.1f}%".format)
+        summary['비용비중(전체대비)'] = (summary['총비용'].cumsum() / total_sales * 100).map("{:.1f}%".format)
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    # 지출 항목별 분석 (기존 유지)
+    st.markdown("#### 💸 지출 항목별 분석")
+    costs_list = []
+    for _, row in m_df.iterrows():
+        try:
+            day_costs = json.loads(row['비용내역'])
+            for c in day_costs:
+                ratio = (c['금액'] / total_sales * 100) if total_sales > 0 else 0
+                costs_list.append({'날짜': row['날짜'], '지출항목': c['항목'], '금액': f"{c['금액']:,}원", '전체매출대비': f"{ratio:.2f}%"})
+        except: continue
+    
+    if costs_list:
+        st.table(pd.DataFrame(costs_list).sort_values('날짜'))
+else:
+    st.info("데이터가 없습니다.")
